@@ -9,6 +9,7 @@ from sklearn.preprocessing import normalize
 from random import choices
 from tqdm.notebook import tqdm
 import spacy
+import scipy
 
 nlp = spacy.load("en")
 
@@ -220,26 +221,26 @@ class SkipGram:
         with open(path, "wb") as f:
             pickle.dump(self, f)
 
-    def similarity(self, word1, word2):
+    def similarity_(word1, word2):
         """
         computes similiarity between the two words. unknown words are mapped to one common vector
         :param word1:
         :param word2:
         :return: a float \in [0,1] indicating the similarity (the higher the more similar)
         """
-        if word1 not in self.vocab:
-            x_w = self.random_vector
+        if word1 not in sg.vocab:
+            x_w = sg.random_vector
         else:
-            id1 = self.w2id[word1]
-            x_w = self.W_[id1]
+            id1 = sg.w2id[word1]
+            x_w = sg.W_[:, id1].reshape(-1, 1)
 
-        if word2 not in self.vocab:
-            x_c = self.random_vector
+        if word2 not in sg.vocab:
+            x_c = sg.random_vector
         else:
-            id2 = self.w2id[word2]
-            x_c = self.W_[id2]
+            id2 = sg.w2id[word2]
+            x_c = sg.W_[:, id2].reshape(-1, 1)
 
-        return self.sigmoid(x_w.T @ x_c)[0][0]
+        return 1 - scipy.spatial.distance.cosine(x_c, x_w)
 
     @staticmethod
     def load(path):
