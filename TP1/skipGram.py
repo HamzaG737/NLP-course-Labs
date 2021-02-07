@@ -8,10 +8,10 @@ from scipy.special import expit
 from sklearn.preprocessing import normalize
 from random import choices
 from tqdm.notebook import tqdm
-import nltk
+import spacy
 
-nltk.download("punkt")
-from nltk.tokenize import word_tokenize
+nlp = spacy.load("en")
+
 from collections import defaultdict
 import random
 import re
@@ -30,6 +30,7 @@ def preprocess(sentence):
     sentence = re.sub(
         "[^a-zA-Z0-9]", " ", sentence
     )  ## remove non alpha numerical  caracters
+    sentence = re.sub(" +", " ", sentence)  ## remove unnecessary spaces
     sentence = re.sub(
         "[0-9]+", "NUMTOKEN", sentence
     )  ## create NUMTOKEN word for numbers
@@ -37,11 +38,14 @@ def preprocess(sentence):
 
 
 def text2sentences(path):
-    # feel free to make a better tokenization/pre-processing
     sentences = []
     with open(path) as f:
-        for l in f:
-            sentences.append(word_tokenize(preprocess(l.lower())))
+        for l in tqdm(f):
+            sentence = []
+            doc = nlp(preprocess(l.lower()))
+            for token in doc:
+                sentence.append(token.lemma_)
+            sentences.append(sentence)
     return sentences
 
 
@@ -57,8 +61,16 @@ def check_if_number(word):
 
 class SkipGram:
     def __init__(
-        self, sentences, lr=1e-2, nEmbed=100, negativeRate=5, winSize=5, minCount=2
+        self,
+        sentences,
+        path_save,
+        lr=1e-2,
+        nEmbed=100,
+        negativeRate=5,
+        winSize=5,
+        minCount=2,
     ):
+        self.path_save = path_save
         self.w2id = {}  # word to ID mapping
 
         self.vocab = []  # list of valid words
@@ -93,16 +105,21 @@ class SkipGram:
         self.vocab = list(self.occurences.keys())
         self.w2id = dict(zip(self.vocab, range(len(self.vocab))))
 
-        total_occurences = sum(list(self.occurences.values()))  ## normalize
-        self.occurences = {
-            k: v / total_occurences for k, v in self.occurences.items()
-        }  ## normalize
+        ## occurences for negative sampling
+        sum_neg = np.sum(np.array(list(self.occurences.values())) ** (3 / 4))
+        self.occurences_neg = {
+            k: (v ** (3 / 4)) / sum_neg for k, v in self.occurences.items()
+        }
 
     def subsample(self, sentences):
         """
         This function subsamples words that are frequent in the dataset.
         """
         trainset_ = []
+        total_occurences = sum(list(self.occurences.values()))  ## normalize
+        occurences_ratio = {
+            k: v / total_occurences for k, v in self.occurences.items()
+        }  ## normalize
         for sentence in sentences:
             current = []
             for word in sentence:
@@ -110,8 +127,8 @@ class SkipGram:
                 if word not in self.vocab:
                     continue
                 ## This is the probability to keep the word. The formulation is taken from word2vec paper.
-                prob = (np.sqrt(self.occurences[word] / 1e-3) + 1) * (
-                    1e-3 / self.occurences[word]
+                prob = (np.sqrt(occurences_ratio[word] / 1e-3) + 1) * (
+                    1e-3 / occurences_ratio[word]
                 )
                 k = random.random()
                 if k < prob:
@@ -121,25 +138,14 @@ class SkipGram:
 
     def sample(self, omit):
         """samples negative words, ommitting those in set omit"""
-        l = list(self.w2id.values())
-        for x in omit:
-            l.remove(x)  ## faster than list comprehension
-        return choices(l, k=self.neg_)
 
-    def onehot(self, Id_):
-        """
-        One hot code labeling of the word indexes.
-        """
-        ## in case we want to encode one index
-        if isinstance(Id_, int):
-            m = np.zeros((len(self.vocab), 1))
-            m[Id_ - 1] = 1
-            return m
-        else:  ## multiple indexes
-            m = np.zeros((len(self.vocab), len(Id_)))
-            for k, index in enumerate(Id_):
-                m[index - 1, k] = 1
-            return m
+        ## we extract self.neg_ + 2 samples because in the worst case, two samples correspond to omit set.
+        rand_ = np.random.multinomial(
+            n=self.neg_ + 2, pvals=list(self.occurences_neg.values())
+        )
+        rand_ = list(np.where(rand_ >= 1)[0])
+        rand_ = [id_ for id_ in rand_ if id_ not in omit]
+        return rand_[: self.neg_]
 
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -172,34 +178,43 @@ class SkipGram:
                 self.loss.append(acc_norm)
                 self.trainWords = 0
                 self.acc = 0.0
+                self.save(self.path_save)
 
     def trainWord(self, wordId, contextId, negativeIds):
 
-        y_context = self.onehot(contextId)
-        z_negatives = self.onehot(negativeIds)
+        x_w = self.W_[:, wordId].reshape(-1, 1)
+        y_c = self.C_[:, contextId].reshape(-1, 1)
+        Z_c = self.C_[:, [neg_id for neg_id in negativeIds]]
 
-        ## faster than self.W_ @ onehotencoding
-        x_w = self.W_[:, wordId - 1].reshape(-1, 1)
-        y_c = self.C_[:, contextId - 1].reshape(-1, 1)
-        Z_c = self.C_[:, [neg_id - 1 for neg_id in negativeIds]]
         ## compute gradients
-        negative_grad_W = np.zeros((self.W_.shape[0], 1))
-        negative_grad_C = np.zeros((1, self.C_.shape[1]))
-
         sig_neg = self.sigmoid(x_w.T @ Z_c)
+        negative_grad_W = np.zeros((self.W_.shape[0], 1))
         negative_grad_W = -np.sum(sig_neg * Z_c, axis=1).reshape(-1, 1)
-        negative_grad_C = -np.sum(sig_neg * z_negatives, axis=1).reshape(1, -1)
+
+        negative_grad_C = np.zeros((len(self.vocab), len(negativeIds)))
+        for neg_id in negativeIds:
+            negative_grad_C[neg_id, :] = sig_neg
+        negative_grad_C = -np.sum(negative_grad_C, axis=1).reshape(1, -1)
         self.acc -= np.sum(np.log(1 - sig_neg + 1e-6), axis=1)[0]
 
         sig_pos = self.sigmoid(-x_w.T @ y_c)[0][0]
-        self.acc -= np.log(1 - sig_pos + 1e-6)
+        self.acc -= np.log(1 - sig_pos + 1e-6)  ## add loss
         grad_w = np.zeros_like(self.W_)
-        ## update only gradient for wordId token
-        grad_w[:, wordId - 1] = (sig_pos * y_c + negative_grad_W).squeeze()
-        grad_c = x_w @ (sig_pos * y_context.T + negative_grad_C)
+        grad_w[:, wordId] = (sig_pos * y_c + negative_grad_W).squeeze()
+
+        grad_c = np.zeros_like(self.C_)
+        for neg_id in negativeIds:
+            grad_c[:, neg_id] = x_w[:, 0] * negative_grad_C[:, neg_id]
+        grad_c[:, contextId] = sig_pos * x_w[:, 0]
+
         ## update weights
-        self.W_ += self.lr_ * grad_w  ## gradient ascent since we want the argmax
-        self.C_ += self.lr_ * grad_c
+        # only one column in W_ needs update, the rest are zeros
+        self.W_[:, wordId] += (
+            self.lr_ * grad_w[:, wordId]
+        )  ## gradient ascent since we want the argmax
+        # only modified context words will be updated
+        for c_id in negativeIds + [contextId]:
+            self.C_[:, c_id] += self.lr_ * grad_c[:, c_id]
 
     def save(self, path):
         with open(path, "wb") as f:
@@ -216,13 +231,13 @@ class SkipGram:
             x_w = self.random_vector
         else:
             id1 = self.w2id[word1]
-            x_w = self.W_ @ self.onehot(id1)
+            x_w = self.W_[id1]
 
         if word2 not in self.vocab:
             x_c = self.random_vector
         else:
             id2 = self.w2id[word2]
-            x_c = self.C_ @ self.onehot(id2)
+            x_c = self.W_[id2]
 
         return self.sigmoid(x_w.T @ x_c)[0][0]
 
@@ -247,7 +262,9 @@ if __name__ == "__main__":
 
     if not opts.test:
         sentences = text2sentences(opts.text)
-        sg = SkipGram(sentences, lr=1e-2, nEmbed=100, negativeRate=5)
+        sg = SkipGram(
+            sentences, path_save=opts.model, lr=1e-2, nEmbed=100, negativeRate=5
+        )
         sg.train()
         sg.save(opts.model)
 
@@ -255,6 +272,6 @@ if __name__ == "__main__":
         pairs = loadPairs(opts.text)
 
         sg = SkipGram.load(opts.model)
-        for a, b, sim_true in pairs:
+        for a, b, _ in pairs:
             # make sure this does not raise any exception, even if a or b are not in sg.vocab
             print("%.5f" % (sg.similarity(a, b)))
