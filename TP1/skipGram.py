@@ -11,7 +11,8 @@ from tqdm.notebook import tqdm
 import spacy
 import scipy
 
-nlp = spacy.load("en")
+nlp = spacy.load("en_core_web_sm")
+# nlp = spacy.load("en")
 
 from collections import defaultdict
 import random
@@ -19,11 +20,17 @@ import re
 import pickle
 
 
-__authors__ = ["author1", "author2", "author3"]
+__authors__ = [
+    "Firas Dhaha",
+    "Hamza Gharbi",
+    "Khalil Bergaoui",
+    "Mohamed-Amine Hachicha",
+]
 __emails__ = [
-    "fatherchristmoas@northpole.dk",
-    "toothfairy@blackforest.no",
-    "easterbunny@greenfield.de",
+    "firas.dhaha@student.ecp.fr",
+    "hamza.gharbi@supelec.fr",
+    "khalil.bergaoui@student.ecp.fr",
+    "mohamed-amine.hachicha@student.ecp.fr",
 ]
 
 
@@ -56,10 +63,6 @@ def loadPairs(path):
     return pairs
 
 
-def check_if_number(word):
-    return re.sub("[0-9]", "NUMTOKEN", word)
-
-
 class SkipGram:
     def __init__(
         self,
@@ -80,8 +83,8 @@ class SkipGram:
         self.get_vocab(sentences)
         self.trainset = self.subsample(sentences)
         ## Initialize weights
-        self.W_ = np.random.normal(0, 1, (nEmbed, len(self.vocab)))
-        self.C_ = np.random.normal(0, 1, (nEmbed, len(self.vocab)))
+        self.W_ = np.random.normal(0, 0.1, (nEmbed, len(self.vocab)))
+        self.C_ = np.random.normal(0, 0.11, (nEmbed, len(self.vocab)))
         ## learning rate
         self.lr_ = lr
         self.neg_ = negativeRate
@@ -189,9 +192,12 @@ class SkipGram:
 
         ## compute gradients
         sig_neg = self.sigmoid(x_w.T @ Z_c)
+
+        ## computing negativ grad w correspond to 2d in report
         negative_grad_W = np.zeros((self.W_.shape[0], 1))
         negative_grad_W = -np.sum(sig_neg * Z_c, axis=1).reshape(-1, 1)
 
+        ## computing negativ grad c correspond to 2b in report
         negative_grad_C = np.zeros((len(self.vocab), len(negativeIds)))
         for neg_id in negativeIds:
             negative_grad_C[neg_id, :] = sig_neg
@@ -201,12 +207,14 @@ class SkipGram:
         sig_pos = self.sigmoid(-x_w.T @ y_c)[0][0]
         self.acc -= np.log(1 - sig_pos + 1e-6)  ## add loss
         grad_w = np.zeros_like(self.W_)
-        grad_w[:, wordId] = (sig_pos * y_c + negative_grad_W).squeeze()
+        grad_w[:, wordId] = (
+            sig_pos * y_c + negative_grad_W
+        ).squeeze()  ## equation 2c + 2d
 
         grad_c = np.zeros_like(self.C_)
         for neg_id in negativeIds:
             grad_c[:, neg_id] = x_w[:, 0] * negative_grad_C[:, neg_id]
-        grad_c[:, contextId] = sig_pos * x_w[:, 0]
+        grad_c[:, contextId] = sig_pos * x_w[:, 0]  ## equation 2a
 
         ## update weights
         # only one column in W_ needs update, the rest are zeros
@@ -221,13 +229,20 @@ class SkipGram:
         with open(path, "wb") as f:
             pickle.dump(self, f)
 
-    def similarity_(word1, word2):
+    def similarity_(self, word1, word2):
         """
         computes similiarity between the two words. unknown words are mapped to one common vector
         :param word1:
         :param word2:
         :return: a float \in [0,1] indicating the similarity (the higher the more similar)
         """
+        doc1 = nlp(preprocess(word1.lower()))
+        doc2 = nlp(preprocess(word2.lower()))
+        for token1, token2 in zip(doc1, doc2):
+            word1 = token1.lemma_
+            word2 = token2.lemma_
+            break
+
         if word1 not in sg.vocab:
             x_w = sg.random_vector
         else:
@@ -240,7 +255,8 @@ class SkipGram:
             id2 = sg.w2id[word2]
             x_c = sg.W_[:, id2].reshape(-1, 1)
 
-        return 1 - scipy.spatial.distance.cosine(x_c, x_w)
+        ## we add 1/2 to have a range of [0,1] instead of [-1,1]
+        return 1 - scipy.spatial.distance.cosine(x_c, x_w) / 2
 
     @staticmethod
     def load(path):
@@ -271,8 +287,7 @@ if __name__ == "__main__":
 
     else:
         pairs = loadPairs(opts.text)
-
         sg = SkipGram.load(opts.model)
         for a, b, _ in pairs:
             # make sure this does not raise any exception, even if a or b are not in sg.vocab
-            print("%.5f" % (sg.similarity(a, b)))
+            print("%.5f" % (sg.similarity_(a, b)))
