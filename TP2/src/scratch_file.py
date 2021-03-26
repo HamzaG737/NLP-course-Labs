@@ -5,6 +5,8 @@ import numpy as np
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 
 nlp = spacy.load('en_core_web_sm')
@@ -43,6 +45,77 @@ devset['sentiment_label'] = le.transform(devset['sentiment'])
 
 import gensim.downloader as api
 twitter_model = api.load('glove-twitter-50')
+
+words = []
+from itertools import islice
+with open('TP2/resources/negative-words.txt') as fin:
+    for line in islice(fin, 36, 4818):
+        words.append(line[:-1])
+
+with open('TP2/resources/positive-words.txt') as fin:
+    for line in islice(fin, 36, 2041):
+        words.append(line[:-1])
+
+vec_corpus = []
+for i in range(len(trainset)):
+    sentiment_terms = trainset.iloc[i, :]['sentiment_terms']
+    for term in sentiment_terms:
+        try:
+            vec = twitter_model.wv[term]
+            vec_corpus.append(vec)
+        except:
+            pass
+
+for word in words:
+    try:
+        vec = twitter_model[word]
+        vec_corpus.append(vec)
+    except:
+        pass
+
+vec_corpus = np.array(vec_corpus)
+
+from sklearn.cluster import KMeans
+
+ssd = []
+for n_clusters in tqdm(range(2,200)):
+  kmeans = KMeans(n_clusters = n_clusters, init='k-means++', max_iter=100, n_init=1)
+  kmeans = kmeans.fit(vec_corpus)
+  ssd.append(kmeans.inertia_)
+
+plt.plot(ssd)
+N_CLUSTERS = 50
+kmeans = KMeans(n_clusters=N_CLUSTERS, init='k-means++', max_iter=1000, n_init=1)
+kmeans = kmeans.fit(vec_corpus)
+
+def get_features(dataset, kmeans, n_clusters, fasttext_model):
+    n = dataset.shape[0]
+    features = np.zeros((n, n_clusters))
+    for i in tqdm(range(n)):
+        sentiment_terms = dataset.iloc[i, :]['sentiment_terms']
+        for term in sentiment_terms:
+            try:
+                vec = fasttext_model[term].reshape(1, -1)
+                label = kmeans.predict(vec)[0]
+                features[i, label] += 1
+            except:
+                pass
+    sum = features.sum(axis=1)
+    sum[sum==0] = 1
+    features /= sum[:, None]
+    return features
+
+
+train_features = get_features(dataset=trainset, kmeans=kmeans, n_clusters=N_CLUSTERS, fasttext_model=twitter_model)
+dev_features = get_features(dataset=devset, kmeans=kmeans, n_clusters=N_CLUSTERS, fasttext_model=twitter_model)
+
+clf = RandomForestClassifier(max_depth=15)
+clf.fit(train_features, trainset['sentiment_label'])
+y_train_pred = clf.predict(train_features)
+
+y_dev_pred = clf.predict(dev_features)
+(y_dev_pred == devset['sentiment_label']).mean()
+
 
 import networkx as nx
 from tqdm import tqdm
