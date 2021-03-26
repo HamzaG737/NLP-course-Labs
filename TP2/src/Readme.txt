@@ -31,4 +31,4 @@ the best accuracy on the DEV set.
   After running tester.py, we get an accuracy of 85.32% on the DEV dataset, which is much better than
 the other methods that we tried.
   
-  Execution takes around 500 seconds with a P100 Nvidia GPU.
+  Execution takes around 500 seconds with a P100 Nvidia GPU and around 1650 seconds with a K80 Tesla GPU
